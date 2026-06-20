@@ -138,7 +138,7 @@ function normalizeTriggers(input) {
     }
 
     return String(input || '')
-        .split(/[\n,锛宂+/)
+        .split(/[\n,，]+/)
         .map((item) => item.trim())
         .filter(Boolean);
 }
