@@ -23,17 +23,6 @@ function base64UrlEncode(bytes) {
     return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
 }
 
-function base64UrlDecode(text) {
-    const normalized = text.replace(/-/g, '+').replace(/_/g, '/');
-    const padded = normalized + '='.repeat((4 - normalized.length % 4) % 4);
-    const binary = atob(padded);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i += 1) {
-        bytes[i] = binary.charCodeAt(i);
-    }
-    return bytes;
-}
-
 function safeJson(data) {
     return JSON.stringify(data).replace(/</g, '\\u003c');
 }
@@ -74,9 +63,7 @@ function parseCookies(request) {
         if (!item) return;
         const index = item.indexOf('=');
         if (index < 0) return;
-        const key = item.slice(0, index);
-        const value = item.slice(index + 1);
-        cookies[key] = value;
+        cookies[item.slice(0, index)] = item.slice(index + 1);
     });
     return cookies;
 }
@@ -101,20 +88,11 @@ async function createAdminSession(adminPassword) {
 }
 
 async function verifyAdminSession(token, adminPassword) {
-    if (!token || !adminPassword) {
-        return false;
-    }
-
+    if (!token || !adminPassword) return false;
     const parts = token.split('.');
-    if (parts.length !== 2) {
-        return false;
-    }
-
+    if (parts.length !== 2) return false;
     const expiresAt = Number(parts[0]);
-    if (!Number.isFinite(expiresAt) || Date.now() > expiresAt) {
-        return false;
-    }
-
+    if (!Number.isFinite(expiresAt) || Date.now() > expiresAt) return false;
     const expected = await hmacSha256(adminPassword, parts[0]);
     return expected === parts[1];
 }
@@ -124,19 +102,13 @@ async function isAdminAuthorized(request, env) {
 }
 
 function normalizeText(value) {
-    return String(value || '')
-        .replace(/\s+/g, '')
-        .trim()
-        .toLowerCase();
+    return String(value || '').replace(/\s+/g, '').trim().toLowerCase();
 }
 
 function normalizeTriggers(input) {
     if (Array.isArray(input)) {
-        return input
-            .map((item) => String(item || '').trim())
-            .filter(Boolean);
+        return input.map((item) => String(item || '').trim()).filter(Boolean);
     }
-
     return String(input || '')
         .split(/[\n,，]+/)
         .map((item) => item.trim())
@@ -158,16 +130,10 @@ function toKeywordView(record) {
 
 async function loadKeywordIndex(env) {
     const raw = await env.NGF_KV.get(KEYWORD_INDEX_KEY);
-    if (!raw) {
-        return [];
-    }
-
+    if (!raw) return [];
     try {
         const parsed = JSON.parse(raw);
-        if (!Array.isArray(parsed)) {
-            return [];
-        }
-        return parsed.filter((item) => typeof item === 'string' && item.length > 0);
+        return Array.isArray(parsed) ? parsed.filter((item) => typeof item === 'string' && item.length > 0) : [];
     } catch {
         return [];
     }
@@ -179,10 +145,7 @@ async function saveKeywordIndex(env, ids) {
 
 async function loadKeywordRecord(env, id) {
     const raw = await env.NGF_KV.get(`keyword:${id}`);
-    if (!raw) {
-        return null;
-    }
-
+    if (!raw) return null;
     try {
         return JSON.parse(raw);
     } catch {
@@ -201,14 +164,10 @@ async function deleteKeywordRecord(env, id) {
 async function listKeywords(env) {
     const ids = await loadKeywordIndex(env);
     const records = [];
-
     for (const id of ids) {
         const record = await loadKeywordRecord(env, id);
-        if (record) {
-            records.push(toKeywordView(record));
-        }
+        if (record) records.push(toKeywordView(record));
     }
-
     return records;
 }
 
@@ -222,15 +181,10 @@ async function setAiEnabled(env, enabled) {
 
 async function matchKeyword(env, text) {
     const normalizedMessage = normalizeText(text);
-    if (!normalizedMessage) {
-        return null;
-    }
-
+    if (!normalizedMessage) return null;
     const records = await listKeywords(env);
     for (const recordView of records) {
-        if (!recordView.enabled) {
-            continue;
-        }
+        if (!recordView.enabled) continue;
         for (const trigger of recordView.triggers) {
             if (normalizeText(trigger) === normalizedMessage) {
                 const fullRecord = await loadKeywordRecord(env, recordView.id);
@@ -238,7 +192,6 @@ async function matchKeyword(env, text) {
             }
         }
     }
-
     return null;
 }
 
@@ -263,17 +216,13 @@ async function postToTelegramMultipartApi(token, method, formData) {
 
 async function sendTelegramText(botToken, chatId, text) {
     const message = String(text || '').trim();
-    if (!message) {
-        return;
-    }
-
+    if (!message) return;
     const chunks = [];
     let remaining = message;
     while (remaining.length > 0) {
         chunks.push(remaining.slice(0, 3500));
         remaining = remaining.slice(3500);
     }
-
     for (const chunk of chunks) {
         await postToTelegramApi(botToken, 'sendMessage', {
             chat_id: parseInt(chatId, 10),
@@ -282,41 +231,30 @@ async function sendTelegramText(botToken, chatId, text) {
     }
 }
 
-async function sendTelegramPhoto(botToken, chatId, fileBytes, filename, contentType, caption) {
+async function sendTelegramPhoto(botToken, chatId, fileBytes, filename, contentType) {
     const formData = new FormData();
     formData.append('chat_id', String(chatId));
     formData.append('photo', new Blob([fileBytes], {type: contentType || 'image/jpeg'}), filename || 'image.jpg');
-    if (caption) {
-        formData.append('caption', caption);
-    }
     return postToTelegramMultipartApi(botToken, 'sendPhoto', formData);
 }
 
 async function sendKeywordReply(env, botToken, chatId, keyword) {
-    const tasks = [];
     if (keyword.image_key) {
         const image = await env.NGF_IMAGES.get(keyword.image_key);
         if (image) {
             const bytes = await image.arrayBuffer();
             const contentType = image.httpMetadata?.contentType || 'image/jpeg';
-            tasks.push(sendTelegramPhoto(botToken, chatId, bytes, keyword.image_key.split('/').pop() || 'image.jpg', contentType));
+            await sendTelegramPhoto(botToken, chatId, bytes, keyword.image_key.split('/').pop() || 'image.jpg', contentType);
         }
     }
-
     if (keyword.reply_text) {
-        tasks.push(sendTelegramText(botToken, chatId, keyword.reply_text));
-    }
-
-    for (const task of tasks) {
-        await task;
+        await sendTelegramText(botToken, chatId, keyword.reply_text);
     }
 }
 
 async function callDeepSeek(env, userText) {
     const apiKey = env.DEEPSEEK_API_KEY || '';
-    if (!apiKey) {
-        return '';
-    }
+    if (!apiKey) return '';
 
     const response = await fetch('https://api.deepseek.com/chat/completions', {
         method: 'POST',
@@ -327,17 +265,14 @@ async function callDeepSeek(env, userText) {
         body: JSON.stringify({
             model: env.DEEPSEEK_MODEL || DEFAULT_DEEPSEEK_MODEL,
             messages: [
-                {role: 'system', content: '浣犳槸涓€涓畝娲佽嚜鐒剁殑 Telegram 绉佽亰鍔╂墜锛岃鐩存帴鍥炵瓟鐢ㄦ埛闂銆?},
+                {role: 'system', content: 'You are a concise Telegram private chat assistant. Reply directly and naturally.'},
                 {role: 'user', content: userText}
             ],
             temperature: 0.7
         })
     });
 
-    if (!response.ok) {
-        return '';
-    }
-
+    if (!response.ok) return '';
     const data = await response.json();
     return data?.choices?.[0]?.message?.content?.trim() || '';
 }
@@ -384,77 +319,76 @@ function buildDashboardHtml({authenticated, keywords, aiEnabled, adminPasswordMi
     .muted { color: var(--muted); font-size: 13px; }
     .preview { display:flex; gap:12px; align-items:flex-start; flex-wrap:wrap; }
     .preview img { width: 120px; height: 120px; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); background:#f8fafc; }
-    .split { display:grid; grid-template-columns: 1fr 1fr; gap: 12px; }
     .switch { display:inline-flex; align-items:center; gap:8px; user-select:none; }
     .switch input { width: 18px; height: 18px; }
     .hidden { display:none !important; }
     .login-wrap { max-width: 520px; margin: 10vh auto 0; }
     .badge { display:inline-flex; align-items:center; padding: 5px 10px; border-radius:999px; background:#e0f2fe; color:#075985; font-size:12px; }
-    @media (max-width: 960px) { .grid { grid-template-columns: 1fr; } .split { grid-template-columns: 1fr; } .topbar { align-items:flex-start; flex-direction:column; } }
+    @media (max-width: 960px) { .grid { grid-template-columns: 1fr; } .topbar { align-items:flex-start; flex-direction:column; } }
   </style>
 </head>
 <body>
   <div class="wrap">
     <div id="loginView" class="panel login-wrap${authenticated ? ' hidden' : ''}">
-      <h2>绠＄悊鍛樼櫥褰?/h2>
+      <h2>管理员登录</h2>
       <div class="field">
-        <label for="password">瀵嗙爜</label>
-        <input id="password" type="password" placeholder="璇疯緭鍏?ADMIN_PASSWORD" autocomplete="current-password" />
+        <label for="password">密码</label>
+        <input id="password" type="password" placeholder="请输入 ADMIN_PASSWORD" autocomplete="current-password" />
       </div>
       <div class="row">
-        <button id="loginBtn" class="primary">鐧诲綍</button>
+        <button id="loginBtn" class="primary">登录</button>
       </div>
       <div id="loginStatus" class="status"></div>
-      <p class="hint">濡傛灉杩欓噷鏄剧ず閿欒锛岃鍏堝湪 Cloudflare Secret 涓缃?<code>ADMIN_PASSWORD</code>銆?/p>
+      <p class="hint">如果这里显示错误，请先在 Cloudflare Secret 中设置 <code>ADMIN_PASSWORD</code>。</p>
     </div>
 
     <div id="dashboardView" class="${authenticated ? '' : 'hidden'}">
       <div class="topbar">
         <div class="title">
-          <h1>NextGenForward 绠＄悊鍚庡彴</h1>
-          <p>鍏抽敭璇嶈嚜鍔ㄥ洖澶嶃€佸浘鐗囩鐞嗗拰 AI 寮€鍏抽兘鍦ㄨ繖閲屽畬鎴愩€?/p>
+          <h1>NextGenForward 管理后台</h1>
+          <p>关键词自动回复、图片管理和 AI 开关都在这里完成。</p>
         </div>
         <div class="row">
-          <span id="aiState" class="badge">AI: 鏈姞杞?/span>
-          <button id="refreshBtn" class="ghost small">鍒锋柊</button>
-          <button id="logoutBtn" class="ghost small">閫€鍑?/button>
+          <span id="aiState" class="badge">AI: 未加载</span>
+          <button id="refreshBtn" class="ghost small">刷新</button>
+          <button id="logoutBtn" class="ghost small">退出</button>
         </div>
       </div>
 
       <div class="grid">
         <section class="panel">
-          <h2 id="formTitle">鏂板鍏抽敭璇?/h2>
+          <h2 id="formTitle">新增关键词</h2>
           <input id="keywordId" type="hidden" />
           <div class="field">
-            <label for="triggers">鍏抽敭璇?/label>
-            <textarea id="triggers" placeholder="姣忚涓€涓紝涔熷彲浠ョ敤閫楀彿鍒嗛殧"></textarea>
+            <label for="triggers">关键词</label>
+            <textarea id="triggers" placeholder="每行一个，也可以用逗号分隔"></textarea>
           </div>
           <div class="field">
-            <label for="replyText">鍥炲鏂囧瓧</label>
-            <textarea id="replyText" placeholder="鍛戒腑鍏抽敭璇嶅悗鑷姩鍙戦€?></textarea>
+            <label for="replyText">回复文字</label>
+            <textarea id="replyText" placeholder="命中关键词后自动发送"></textarea>
           </div>
           <div class="field">
-            <label for="imageFile">鍥炲鍥剧墖</label>
+            <label for="imageFile">回复图片</label>
             <input id="imageFile" type="file" accept="image/*" />
           </div>
           <div class="field">
-            <label class="switch"><input id="enabled" type="checkbox" checked /> 鍚敤杩欐潯鍏抽敭璇?/label>
+            <label class="switch"><input id="enabled" type="checkbox" checked /> 启用这条关键词</label>
           </div>
           <div class="field">
-            <label class="switch"><input id="removeImage" type="checkbox" /> 鍒犻櫎褰撳墠鍥剧墖</label>
+            <label class="switch"><input id="removeImage" type="checkbox" /> 删除当前图片</label>
           </div>
           <div class="row">
-            <button id="saveBtn" class="primary">淇濆瓨</button>
-            <button id="clearBtn" class="ghost">娓呯┖</button>
+            <button id="saveBtn" class="primary">保存</button>
+            <button id="clearBtn" class="ghost">清空</button>
           </div>
           <div id="formStatus" class="status"></div>
         </section>
 
         <section class="panel">
           <div class="row" style="justify-content: space-between; margin-bottom: 12px;">
-            <h2 style="margin:0;">鍏抽敭璇嶅垪琛?/h2>
+            <h2 style="margin:0;">关键词列表</h2>
             <div class="row">
-              <label class="switch" style="margin:0;"><input id="aiToggle" type="checkbox" /> 寮€鍚?DeepSeek AI 鍥炲</label>
+              <label class="switch" style="margin:0;"><input id="aiToggle" type="checkbox" /> 开启 DeepSeek AI 回复</label>
             </div>
           </div>
           <div id="adminNotice" class="status"></div>
@@ -466,7 +400,6 @@ function buildDashboardHtml({authenticated, keywords, aiEnabled, adminPasswordMi
 
   <script>
     window.__NGF_BOOTSTRAP__ = ${bootstrap};
-
     const bootstrap = window.__NGF_BOOTSTRAP__;
     const loginView = document.getElementById('loginView');
     const dashboardView = document.getElementById('dashboardView');
@@ -506,33 +439,30 @@ function buildDashboardHtml({authenticated, keywords, aiEnabled, adminPasswordMi
       imageFileInput.value = '';
       enabledInput.checked = true;
       removeImageInput.checked = false;
-      formTitle.textContent = '鏂板鍏抽敭璇?;
-      saveBtn.textContent = '淇濆瓨';
+      formTitle.textContent = '新增关键词';
+      saveBtn.textContent = '保存';
       setStatus(formStatus, '');
     }
 
     function renderAiState(enabled) {
       aiToggle.checked = Boolean(enabled);
-      aiState.textContent = enabled ? 'AI: 宸插紑鍚? : 'AI: 宸插叧闂?;
+      aiState.textContent = enabled ? 'AI: 已开启' : 'AI: 已关闭';
     }
 
     function renderKeywords(items) {
       keywordList.innerHTML = '';
       if (!items.length) {
-        keywordList.innerHTML = '<div class="muted">鏆傛棤鍏抽敭璇嶏紝璇峰厛鍦ㄥ乏渚ф柊澧炰竴鏉°€?/div>';
+        keywordList.innerHTML = '<div class="muted">暂无关键词，请先在左侧新增一条。</div>';
         return;
       }
-
       for (const item of items) {
         const node = document.createElement('div');
         node.className = 'item';
-
         const head = document.createElement('div');
         head.className = 'item-head';
-
         const left = document.createElement('div');
         const title = document.createElement('div');
-        title.innerHTML = '<strong>' + item.id + '</strong> ' + (item.enabled ? '<span class="tag">鍚敤</span>' : '<span class="tag">鍋滅敤</span>');
+        title.innerHTML = '<strong>' + item.id + '</strong> ' + (item.enabled ? '<span class="tag">启用</span>' : '<span class="tag">停用</span>');
         const tags = document.createElement('div');
         tags.className = 'tags';
         for (const trigger of item.triggers || []) {
@@ -543,12 +473,11 @@ function buildDashboardHtml({authenticated, keywords, aiEnabled, adminPasswordMi
         }
         left.appendChild(title);
         left.appendChild(tags);
-
         const actions = document.createElement('div');
         actions.className = 'row';
         const editBtn = document.createElement('button');
         editBtn.className = 'ghost small';
-        editBtn.textContent = '缂栬緫';
+        editBtn.textContent = '编辑';
         editBtn.addEventListener('click', () => {
           keywordId.value = item.id;
           triggersInput.value = (item.triggers || []).join('\n');
@@ -556,33 +485,28 @@ function buildDashboardHtml({authenticated, keywords, aiEnabled, adminPasswordMi
           enabledInput.checked = Boolean(item.enabled);
           removeImageInput.checked = false;
           imageFileInput.value = '';
-          formTitle.textContent = '缂栬緫鍏抽敭璇?;
-          saveBtn.textContent = '鏇存柊';
-          setStatus(formStatus, '姝ｅ湪缂栬緫 ' + item.id + '銆?);
+          formTitle.textContent = '编辑关键词';
+          saveBtn.textContent = '更新';
+          setStatus(formStatus, '正在编辑 ' + item.id + '。');
           window.scrollTo({top: 0, behavior: 'smooth'});
         });
-
         const deleteBtn = document.createElement('button');
         deleteBtn.className = 'danger small';
-        deleteBtn.textContent = '鍒犻櫎';
+        deleteBtn.textContent = '删除';
         deleteBtn.addEventListener('click', async () => {
-          if (!confirm('纭鍒犻櫎杩欐潯鍏抽敭璇嶏紵')) return;
+          if (!confirm('确认删除这条关键词？')) return;
           await apiDelete('/admin/api/keywords/' + encodeURIComponent(item.id));
           await loadData();
         });
-
         actions.appendChild(editBtn);
         actions.appendChild(deleteBtn);
-
         head.appendChild(left);
         head.appendChild(actions);
         node.appendChild(head);
-
         const reply = document.createElement('div');
         reply.className = 'muted';
-        reply.textContent = item.reply_text ? item.reply_text : '鏈缃洖澶嶆枃瀛?;
+        reply.textContent = item.reply_text ? item.reply_text : '未设置回复文字';
         node.appendChild(reply);
-
         if (item.image_url) {
           const preview = document.createElement('div');
           preview.className = 'preview';
@@ -591,21 +515,18 @@ function buildDashboardHtml({authenticated, keywords, aiEnabled, adminPasswordMi
           img.alt = 'keyword image';
           const meta = document.createElement('div');
           meta.className = 'muted';
-          meta.innerHTML = '宸茬粦瀹氬浘鐗囥€?;
+          meta.textContent = '已绑定图片。';
           preview.appendChild(img);
           preview.appendChild(meta);
           node.appendChild(preview);
         }
-
         keywordList.appendChild(node);
       }
     }
 
     async function apiGet(url) {
       const response = await fetch(url, {credentials: 'same-origin'});
-      if (!response.ok) {
-        throw new Error(await response.text());
-      }
+      if (!response.ok) throw new Error(await response.text());
       return response.json();
     }
 
@@ -618,7 +539,7 @@ function buildDashboardHtml({authenticated, keywords, aiEnabled, adminPasswordMi
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.success === false) {
-        throw new Error(data.message || response.statusText || '璇锋眰澶辫触');
+        throw new Error(data.message || response.statusText || '请求失败');
       }
       return data;
     }
@@ -627,7 +548,7 @@ function buildDashboardHtml({authenticated, keywords, aiEnabled, adminPasswordMi
       const response = await fetch(url, {method: 'DELETE', credentials: 'same-origin'});
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.success === false) {
-        throw new Error(data.message || response.statusText || '璇锋眰澶辫触');
+        throw new Error(data.message || response.statusText || '请求失败');
       }
       return data;
     }
@@ -642,7 +563,7 @@ function buildDashboardHtml({authenticated, keywords, aiEnabled, adminPasswordMi
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.success === false) {
-        throw new Error(data.message || response.statusText || '鍥剧墖涓婁紶澶辫触');
+        throw new Error(data.message || response.statusText || '图片上传失败');
       }
       return data;
     }
@@ -651,12 +572,12 @@ function buildDashboardHtml({authenticated, keywords, aiEnabled, adminPasswordMi
       const data = await apiGet('/admin/api/keywords');
       renderAiState(data.ai_enabled);
       renderKeywords(data.keywords || []);
-      setStatus(adminNotice, '鍏抽敭璇嶅凡鍔犺浇锛屽叡 ' + (data.keywords || []).length + ' 鏉°€?, 'ok');
+      setStatus(adminNotice, '关键词已加载，共 ' + (data.keywords || []).length + ' 条。', 'ok');
     }
 
     loginBtn?.addEventListener('click', async () => {
       try {
-        setStatus(loginStatus, '姝ｅ湪鐧诲綍...');
+        setStatus(loginStatus, '正在登录...');
         await apiJson('/admin/api/login', 'POST', {password: document.getElementById('password').value});
         location.reload();
       } catch (error) {
@@ -683,7 +604,7 @@ function buildDashboardHtml({authenticated, keywords, aiEnabled, adminPasswordMi
       try {
         await apiJson('/admin/api/ai', 'POST', {enabled: aiToggle.checked});
         renderAiState(aiToggle.checked);
-        setStatus(adminNotice, 'AI 寮€鍏冲凡鏇存柊銆?, 'ok');
+        setStatus(adminNotice, 'AI 开关已更新。', 'ok');
       } catch (error) {
         aiToggle.checked = !aiToggle.checked;
         setStatus(adminNotice, error.message, 'err');
@@ -699,12 +620,11 @@ function buildDashboardHtml({authenticated, keywords, aiEnabled, adminPasswordMi
           remove_image: removeImageInput.checked
         };
 
-        let keyword;
         if (keywordId.value) {
-          keyword = await apiJson('/admin/api/keywords/' + encodeURIComponent(keywordId.value), 'PUT', payload);
+          await apiJson('/admin/api/keywords/' + encodeURIComponent(keywordId.value), 'PUT', payload);
         } else {
-          keyword = await apiJson('/admin/api/keywords', 'POST', payload);
-          keywordId.value = keyword.keyword.id;
+          const created = await apiJson('/admin/api/keywords', 'POST', payload);
+          keywordId.value = created.keyword.id;
         }
 
         const file = imageFileInput.files && imageFileInput.files[0];
@@ -714,7 +634,7 @@ function buildDashboardHtml({authenticated, keywords, aiEnabled, adminPasswordMi
           await apiDelete('/admin/api/keywords/' + encodeURIComponent(keywordId.value) + '/image');
         }
 
-        setStatus(formStatus, '淇濆瓨鎴愬姛銆?, 'ok');
+        setStatus(formStatus, '保存成功。', 'ok');
         await loadData();
         resetForm();
       } catch (error) {
@@ -723,7 +643,7 @@ function buildDashboardHtml({authenticated, keywords, aiEnabled, adminPasswordMi
     });
 
     if (bootstrap.adminPasswordMissing) {
-      setStatus(loginStatus, '鏈娴嬪埌 ADMIN_PASSWORD锛岃鍏堝湪 Cloudflare Secret 涓缃€?, 'err');
+      setStatus(loginStatus, '未检测到 ADMIN_PASSWORD，请先在 Cloudflare Secret 中设置。', 'err');
     }
 
     if (bootstrap.authenticated) {
@@ -758,23 +678,19 @@ async function handleAdminLogin(request, env) {
     }
 
     if (String(payload.password || '') !== adminPassword) {
-        return jsonResponse({success: false, message: '瀵嗙爜閿欒銆?}, 401);
+        return jsonResponse({success: false, message: '密码错误。'}, 401);
     }
 
     const session = await createAdminSession(adminPassword);
-    return jsonResponse(
-        {success: true, message: '鐧诲綍鎴愬姛銆?},
-        200,
-        {'Set-Cookie': setCookieHeader(ADMIN_COOKIE_NAME, session, ADMIN_SESSION_TTL_SECONDS)}
-    );
+    return jsonResponse({success: true, message: '登录成功。'}, 200, {
+        'Set-Cookie': setCookieHeader(ADMIN_COOKIE_NAME, session, ADMIN_SESSION_TTL_SECONDS)
+    });
 }
 
 async function handleAdminLogout() {
-    return jsonResponse(
-        {success: true, message: '宸查€€鍑虹櫥褰曘€?},
-        200,
-        {'Set-Cookie': setCookieHeader(ADMIN_COOKIE_NAME, '', 0)}
-    );
+    return jsonResponse({success: true, message: '已退出登录。'}, 200, {
+        'Set-Cookie': setCookieHeader(ADMIN_COOKIE_NAME, '', 0)
+    });
 }
 
 async function handleAdminPage(request, env) {
@@ -815,7 +731,7 @@ async function handleAdminKeywords(request, env) {
 
         const triggers = normalizeTriggers(payload.triggers);
         if (!triggers.length) {
-            return jsonResponse({success: false, message: '鑷冲皯闇€瑕佷竴涓叧閿瘝銆?}, 400);
+            return jsonResponse({success: false, message: '至少需要一个关键词。'}, 400);
         }
 
         const id = crypto.randomUUID();
@@ -848,7 +764,7 @@ async function handleAdminKeywordItem(request, env, id) {
 
     const record = await loadKeywordRecord(env, id);
     if (!record) {
-        return jsonResponse({success: false, message: '鍏抽敭璇嶄笉瀛樺湪銆?}, 404);
+        return jsonResponse({success: false, message: '关键词不存在。'}, 404);
     }
 
     if (request.method === 'PUT' || request.method === 'PATCH') {
@@ -861,7 +777,7 @@ async function handleAdminKeywordItem(request, env, id) {
 
         const triggers = normalizeTriggers(payload.triggers);
         if (!triggers.length) {
-            return jsonResponse({success: false, message: '鑷冲皯闇€瑕佷竴涓叧閿瘝銆?}, 400);
+            return jsonResponse({success: false, message: '至少需要一个关键词。'}, 400);
         }
 
         record.triggers = triggers;
@@ -902,7 +818,7 @@ async function handleAdminKeywordImage(request, env, id) {
 
     const record = await loadKeywordRecord(env, id);
     if (!record) {
-        return jsonResponse({success: false, message: '鍏抽敭璇嶄笉瀛樺湪銆?}, 404);
+        return jsonResponse({success: false, message: '关键词不存在。'}, 404);
     }
 
     if (request.method === 'GET') {
@@ -925,11 +841,11 @@ async function handleAdminKeywordImage(request, env, id) {
         const formData = await request.formData();
         const file = formData.get('image');
         if (!(file instanceof File)) {
-            return jsonResponse({success: false, message: '璇蜂笂浼犲浘鐗囨枃浠躲€?}, 400);
+            return jsonResponse({success: false, message: '请上传图片文件。'}, 400);
         }
 
         if (!file.type.startsWith('image/')) {
-            return jsonResponse({success: false, message: '浠呮敮鎸佸浘鐗囨枃浠躲€?}, 400);
+            return jsonResponse({success: false, message: '仅支持图片文件。'}, 400);
         }
 
         if (record.image_key) {
@@ -1065,7 +981,6 @@ export async function handleUninstall(botToken, secretToken) {
 
     try {
         const response = await postToTelegramApi(botToken, 'deleteWebhook', {});
-
         const result = await response.json();
         if (result.ok) {
             return jsonResponse({success: true, message: 'Webhook successfully uninstalled.'});
@@ -1089,6 +1004,7 @@ export async function handleWebhook(request, ownerUid, botToken, secretToken, en
 
     const message = update.message;
     const reply = message.reply_to_message;
+
     try {
         if (reply && message.chat.id.toString() === ownerUid) {
             const rm = reply.reply_markup;
@@ -1108,7 +1024,7 @@ export async function handleWebhook(request, ownerUid, botToken, secretToken, en
             return new Response('OK');
         }
 
-        if ("/start" === message.text) {
+        if (message.text === '/start') {
             return new Response('OK');
         }
 
@@ -1118,12 +1034,12 @@ export async function handleWebhook(request, ownerUid, botToken, secretToken, en
 
         const copyMessage = async function (withUrl = false) {
             const ik = [[{
-                text: `棣冩敽 From: ${senderName} (${senderUid})`,
-                callback_data: senderUid,
+                text: `From: ${senderName} (${senderUid})`,
+                callback_data: senderUid
             }]];
 
             if (withUrl) {
-                ik[0][0].text = `棣冩晛 From: ${senderName} (${senderUid})`;
+                ik[0][0].text = `From: ${senderName} (${senderUid})`;
                 ik[0][0].url = `tg://user?id=${senderUid}`;
             }
 
@@ -1163,7 +1079,6 @@ export async function handleWebhook(request, ownerUid, botToken, secretToken, en
 export async function handleRequest(request, env) {
     const prefix = env.PREFIX || 'public';
     const secretToken = env.SECRET_TOKEN || '';
-
     const url = new URL(request.url);
     const path = url.pathname;
 
