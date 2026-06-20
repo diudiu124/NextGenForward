@@ -1,3 +1,3 @@
 name = "nextgenforward"
 main = "worker.js"
-compatibility_date = "2026-01-15"
+compatibility_date = "2026-06-20"
